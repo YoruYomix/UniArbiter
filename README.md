@@ -71,7 +71,7 @@ The single interface for all strategies.
 ```csharp
 public interface IStrategy<T>
 {
-    IReadOnlyList<T> Execute(IReadOnlyList<T> candidates, ArbiterContext context);
+    IReadOnlyList<T> Execute(IReadOnlyList<T> candidates, IArbiterContext context);
 }
 ```
 
@@ -79,17 +79,54 @@ public interface IStrategy<T>
 - **Scoring Strategy** — Scores candidates and returns only the highest-scoring ones.
 - Regardless of what a strategy does, the signature is the same. The arbiter does not distinguish between them.
 
-### ArbiterContext
+### IArbiterContext
 
-A context object that holds current situational information.
+A context interface that holds current situational information.
+Users implement this interface to define the context their game needs.
 
 ```csharp
-public class ArbiterContext
+public interface IArbiterContext { }
+```
+
+Users inherit from this interface to define project-specific contexts.
+
+```csharp
+public class BattleContext : IArbiterContext
 {
-    // Is combat active, whose turn is it, what is the current scene, etc.
-    // Users store whatever information they need
+    public int CurrentTurn { get; set; }
+    public bool IsBossPhase { get; set; }
+    public WeatherType Weather { get; set; }
+}
+
+public class DungeonContext : IArbiterContext
+{
+    public int FloorLevel { get; set; }
+    public bool IsAmbush { get; set; }
 }
 ```
+
+Inside strategies, use `is` pattern matching to cast to the concrete type when needed.
+
+```csharp
+public class BossPhaseFilter : IRule<IEnemy>
+{
+    public IReadOnlyList<IEnemy> Apply(IReadOnlyList<IEnemy> candidates, IArbiterContext ctx)
+    {
+        if (ctx is BattleContext battle && battle.IsBossPhase)
+        {
+            // During boss phase, target only bosses
+            var bosses = candidates.Where(e => e.IsBoss).ToList();
+            return bosses.Count > 0 ? bosses : candidates;
+        }
+
+        return candidates;
+    }
+}
+```
+
+This design allows a single arbiter to work with multiple context types.
+Each strategy uses `is` to extract only the context type it cares about.
+If an unrelated context is passed in, the strategy simply passes through all candidates unchanged.
 
 ### Strategy Types
 
@@ -139,7 +176,7 @@ Implement `IStrategy<T>`. You can use the library-provided `RuleStrategy` and `S
 ```csharp
 public class ExcludeHiddenEnemies : IRule<IEnemy>
 {
-    public IReadOnlyList<IEnemy> Apply(IReadOnlyList<IEnemy> candidates, ArbiterContext ctx)
+    public IReadOnlyList<IEnemy> Apply(IReadOnlyList<IEnemy> candidates, IArbiterContext ctx)
     {
         return candidates.Where(e => !e.IsHidden).ToList();
     }
@@ -147,7 +184,7 @@ public class ExcludeHiddenEnemies : IRule<IEnemy>
 
 public class BackRowFilter : IRule<IEnemy>
 {
-    public IReadOnlyList<IEnemy> Apply(IReadOnlyList<IEnemy> candidates, ArbiterContext ctx)
+    public IReadOnlyList<IEnemy> Apply(IReadOnlyList<IEnemy> candidates, IArbiterContext ctx)
     {
         var maxRow = candidates.Max(e => e.Row);
         return candidates.Where(e => e.Row == maxRow).ToList();
@@ -160,7 +197,7 @@ public class BackRowFilter : IRule<IEnemy>
 ```csharp
 public class HpRatioScorer : IScorer<IEnemy>
 {
-    public float Score(IEnemy enemy, ArbiterContext ctx)
+    public float Score(IEnemy enemy, IArbiterContext ctx)
     {
         return 1f - enemy.HpRatio; // Lower health = higher score
     }
