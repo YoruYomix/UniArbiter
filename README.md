@@ -1,60 +1,112 @@
-# UniArbiter
+<p align="center">
+  <h1 align="center">UniArbiter</h1>
+  <p align="center">
+    A Unity-specific arbiter pattern library that solves the "choose one from multiple candidates" problem in games
+    <br />
+    <br />
+    <a href="#installation">Installation</a>
+    ·
+    <a href="#quick-start">Quick Start</a>
+    ·
+    <a href="#api-reference">API Reference</a>
+    ·
+    <a href="#examples">Examples</a>
+    ·
+    <a href="#license">License</a>
+  </p>
+</p>
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+---
 
-A Unity-focused **Arbiter Pattern** library that solves the "pick one from many candidates" problem through composable strategy pipelines.
+## Why Do You Need This?
 
-## Table of Contents
+When developing games, you repeatedly encounter the situation: "there are multiple candidates, but you need to pick just one."
 
-- [Motivation](#motivation)
-- [Core Concept](#core-concept)
-- [Installation](#installation)
-- [Quick Start](#quick-start)
-- [API Reference](#api-reference)
-  - [IStrategy\<T\>](#istrategyt)
-  - [ArbiterContext](#arbitercontext)
-  - [Strategy Types](#strategy-types)
-  - [Arbiter\<T\>](#arbitert)
-  - [Runtime Modifications](#runtime-modifications)
-- [Examples](#examples)
-- [Advanced Usage](#advanced-usage)
-- [Design Principles](#design-principles)
-- [License](#license)
+| Genre | Situation |
+|---|---|
+| Souls-like | Multiple lock-on targets — which one to target? |
+| RPG | NPC, chest, and door overlap — which one does the F key interact with? |
+| Auto-battle | Healer has multiple allies — who to heal first? |
+| 3D Action | Wall-cling, ledge-drop, and ladder-climb are all available — which to perform? |
+| TCG | Multiple effects can trigger simultaneously — which one to apply? |
+| Resource Management | Under memory pressure — which loaded asset to unload first? |
 
-## Motivation
+Currently, these problems are solved with if-else branching, hardcoded BT leaf nodes, or state machine transition conditions.
+Every time a new condition is added, existing branches must be modified, and the number of cases grows exponentially.
 
-Games constantly face the "multiple candidates, one choice" problem:
+UniArbiter solves this problem with a **strategy pipeline**.
 
-- **Souls-like:** Multiple lock-on targets — which enemy should the camera focus on?
-- **RPG:** NPC, chest, and door overlap — which one does the interact key activate?
-- **Auto-battle:** Healer has multiple wounded allies — who gets healed first?
-- **3D Action:** Wall-climb, ledge-drop, and ladder are all available — which action triggers?
-- **TCG:** Multiple effects can activate simultaneously — which one resolves?
-- **Resource Management:** Memory pressure — which loaded asset gets unloaded first?
+## Features
 
-The typical approach — `if-else` branches, hardcoded behavior tree leaves, or state machine transitions — breaks down quickly. Every new condition touches existing logic, and the number of edge cases grows exponentially.
-
-UniArbiter replaces all of that with a **strategy pipeline**.
-
-## Core Concept
-
-```
-Candidates → Strategy[0] → Strategy[1] → ... → Strategy[N] → Final Selection
-```
-
-An arbiter simply runs an array of strategies in order. Each strategy filters, scores, or reshapes the candidate list — the arbiter doesn't care how.
+- **Single Concept** — An arbiter does one thing: "execute an array of strategies sequentially."
+- **Single Interface** — All strategies are unified under `IStrategy<T>`.
+- **Type as Identifier** — Strategies are identified by their type parameter; no string keys.
+- **Composition First** — Build small strategies and combine them as arrays.
+- **IDisposable + Weight** — The sole principle for all runtime modifications.
+- **Zero Dependencies** — Works without any external dependencies.
+- **IL2CPP Safe** — Works safely in AOT environments.
 
 ## Installation
 
-Add via Unity Package Manager using the Git URL:
+### Unity Package Manager (Git URL)
+
+`Window → Package Manager → + → Add package from git URL...`
 
 ```
 https://github.com/YoruYomix/UniArbiter.git
 ```
 
+## Core Concepts
+
+```
+Candidate List → Strategy[0] → Strategy[1] → ... → Strategy[N] → Final Selection
+```
+
+The arbiter simply executes the strategy array sequentially. Whether each strategy filters candidates or scores them, the arbiter doesn't know or care.
+
+### IStrategy\<T\>
+
+The single interface for all strategies.
+
+```csharp
+public interface IStrategy<T>
+{
+    IReadOnlyList<T> Execute(IReadOnlyList<T> candidates, ArbiterContext context);
+}
+```
+
+- **Filtering Strategy** — Removes candidates that don't meet the conditions and returns the rest.
+- **Scoring Strategy** — Scores candidates and returns only the highest-scoring ones.
+- Regardless of what a strategy does, the signature is the same. The arbiter does not distinguish between them.
+
+### ArbiterContext
+
+A context object that holds current situational information.
+
+```csharp
+public class ArbiterContext
+{
+    // Is combat active, whose turn is it, what is the current scene, etc.
+    // Users store whatever information they need
+}
+```
+
+### Strategy Types
+
+Strategies are identified by their type parameter. Each strategy registered with an arbiter has a unique type, and all runtime modifications target strategies by type.
+
+```csharp
+// Strategy type definitions (empty structs)
+public struct ArcherBaseRules { }
+public struct ArcherBaseScoring { }
+public struct ArcherCharmRules { }
+```
+
 ## Quick Start
 
-### 1. Define a candidate type
+### 1. Define the Candidate Type
+
+Define the interface for the candidates the arbiter will choose from.
 
 ```csharp
 public interface IEnemy
@@ -64,18 +116,33 @@ public interface IEnemy
     bool IsHidden { get; }
     bool IsInvincible { get; }
     int Row { get; }
+    List<DebuffType> Debuffs { get; }
+}
+
+public class Enemy : MonoBehaviour, IEnemy
+{
+    public float HpRatio => _currentHp / _maxHp;
+    public bool HasTaunt => _buffs.Contains(BuffType.Taunt);
+    public bool IsHidden => _buffs.Contains(BuffType.Stealth);
+    public bool IsInvincible => _buffs.Contains(BuffType.Invincible);
+    public int Row => _position.row;
+    public List<DebuffType> Debuffs => _debuffs;
 }
 ```
 
-### 2. Write strategy steps
+### 2. Write Strategies
+
+Implement `IStrategy<T>`. You can use the library-provided `RuleStrategy` and `ScoringStrategy`, or implement your own.
+
+**Rule Example:**
 
 ```csharp
-public class ExcludeHidden : IRule<IEnemy>
+public class ExcludeHiddenEnemies : IRule<IEnemy>
 {
     public IReadOnlyList<IEnemy> Apply(IReadOnlyList<IEnemy> candidates, ArbiterContext ctx)
     {
         var result = candidates.Where(e => !e.IsHidden).ToList();
-        return result.Count > 0 ? result : candidates; // fallback to all if none remain
+        return result.Count > 0 ? result : candidates;
     }
 }
 
@@ -87,27 +154,29 @@ public class BackRowFilter : IRule<IEnemy>
         return candidates.Where(e => e.Row == maxRow).ToList();
     }
 }
+```
 
+**Scorer Example:**
+
+```csharp
 public class HpRatioScorer : IScorer<IEnemy>
 {
     public float Score(IEnemy enemy, ArbiterContext ctx)
     {
-        return 1f - enemy.HpRatio; // lower HP = higher score
+        return 1f - enemy.HpRatio; // Lower health = higher score
     }
 }
 ```
 
-### 3. Create an arbiter
+### 3. Create the Arbiter
+
+Build the arbiter with a strategy array. Both strategies and rules within them can have weights.
 
 ```csharp
-// Define strategy types as empty structs
-public struct ArcherBaseRule { }
-public struct ArcherBaseScoring { }
-
 var arbiter = new Arbiter<IEnemy>(
-    new RuleStrategy<ArcherBaseRule>(
+    new RuleStrategy<ArcherBaseRules>(
         new ForceTauntTarget(),
-        new ExcludeHidden(),
+        new ExcludeHiddenEnemies(),
         new BackRowFilter()
     ),
     new ScoringStrategy<ArcherBaseScoring>(
@@ -117,251 +186,281 @@ var arbiter = new Arbiter<IEnemy>(
 );
 ```
 
-### 4. Resolve
+Assigning a weight to a rule gives it resistance against Override/Suppress.
 
 ```csharp
-IReadOnlyList<IEnemy> targets = arbiter.Resolve(enemies, context);
-
-// Never returns null — returns an empty list if all candidates are filtered out.
-if (targets.Count > 0)
-    targets[0].TakeDamage(damage);
-```
-
-## API Reference
-
-### IStrategy\<T\>
-
-The single interface every strategy implements.
-
-```csharp
-public interface IStrategy<T>
-{
-    IReadOnlyList<T> Execute(IReadOnlyList<T> candidates, ArbiterContext context);
-}
-```
-
-- **Rule strategies** — remove candidates that don't meet conditions, return the rest.
-- **Scoring strategies** — assign scores to candidates, return the highest.
-- Regardless of behavior, the signature is identical. The arbiter makes no distinction.
-
-### ArbiterContext
-
-A context object carrying situational information (current turn, active scene, combat state, etc.). Populate it with whatever your strategies need.
-
-```csharp
-public class ArbiterContext
-{
-    // Add fields relevant to your game:
-    // bool IsInCombat, int CurrentTurn, string ActiveScene, etc.
-}
-```
-
-### Strategy Types
-
-Strategies are identified by their type parameter — an empty struct that acts as a compile-time key. All runtime modifications target strategies by type, eliminating string-based lookups.
-
-```csharp
-public struct ArcherBaseRule { }
-public struct ArcherBaseScoring { }
-public struct ArcherCharmRule { }
-```
-
-### Arbiter\<T\>
-
-#### Creation
-
-```csharp
-// Rule + Scoring
 var arbiter = new Arbiter<IEnemy>(
-    new RuleStrategy<ArcherBaseRule>(new ExcludeHidden(), new BackRowFilter()),
-    new ScoringStrategy<ArcherBaseScoring>(
-        (new HpRatioScorer(), 0.5f),
-        (new ThreatScorer(), 0.5f)
-    )
-);
-
-// Rule only
-var arbiter = new Arbiter<IEnemy>(
-    new RuleStrategy<ArcherBaseRule>(new ForceTauntTarget(), new ExcludeHidden(), new BackRowFilter())
-);
-
-// Scoring only
-var arbiter = new Arbiter<IEnemy>(
-    new ScoringStrategy<ArcherBaseScoring>(
-        (new HpRatioScorer(), 0.5f),
-        (new ThreatScorer(), 0.5f)
+    new RuleStrategy<ArcherBaseRules>(
+        (new ForceTauntTarget(), weight: 50),  // High weight → strong resistance to Override/Suppress
+        new ExcludeHiddenEnemies(),             // Weight omitted → default 0
+        new BackRowFilter()
     )
 );
 ```
 
-#### Execution Flow
+### 4. Execute
+
+```csharp
+IReadOnlyList<T> results = arbiter.Resolve(candidates, context);
+```
 
 ```
 Resolve(candidates, context)
-    → Strategy[0].Execute(candidates) → narrows or reorders
-    → Strategy[1].Execute(remaining)  → narrows or reorders
+    → Strategy[0].Execute(candidates) → narrows or sorts candidates
+    → Strategy[1].Execute(remaining)  → narrows or sorts candidates
     → ...
-    → returns filtered result list
+    → returns the filtered result array
 ```
+
+### 5. Use the Results
+
+`Resolve` always returns `IReadOnlyList<T>`. It never returns null. If all candidates are filtered out, it returns an empty array.
+
+```csharp
+var targets = arbiter.Resolve(enemies, context);
+
+switch (targets.Count)
+{
+    case 0:
+        break;                                          // No candidates
+    case 1:
+        targets[0].TakeDamage(damage);                  // Single result
+        break;
+    default:
+        targets[0].TakeDamage(damage);                  // Use the first
+        targets[Random.Range(0, targets.Count)]...;     // Random selection
+        foreach (var t in targets) t.TakeDamage(...);   // AoE attack
+        break;
+}
+```
+
+The arbiter doesn't hide decisions. It transparently shows how many results there are, and the user decides what to do.
+
+## API Reference
 
 ### Runtime Modifications
 
-All runtime modifications return an `IDisposable` handle. Call `Dispose()` to revert. Every modification targets a strategy by type. When multiple modifications compete for the same target, the one with the highest **weight** wins.
-
-#### API Overview
+All runtime modifications return an `IDisposable` handle and are released via `Dispose`. When multiple modifications compete for the same target, weight determines the winner. All modifications specify their target by strategy type.
 
 | Method | Purpose |
 |---|---|
-| `Override<T>(strategy, weight)` | Temporarily replace an entire strategy |
-| `InsertFirst<T>(step)` | Insert a step at the beginning of a strategy |
-| `InsertLast<T>(step)` | Insert a step at the end of a strategy |
-| `InsertBefore<TStrategy, TStep>(step)` | Insert before a specific step |
-| `InsertAfter<TStrategy, TStep>(step)` | Insert after a specific step |
-| `Suppress<TStrategy, TStep>(weight)` | Temporarily disable a specific step |
-| `InsertFirstAll(step)` | Insert a step at the beginning of all strategies |
-| `InsertLastAll(step)` | Insert a step at the end of all strategies |
-| `SuppressAll<TStep>(weight)` | Disable a step across all strategies |
+| `OverrideStrategy<T>(strategy, weight)` | Temporarily replace an entire strategy |
+| `Override<TStrategy, TRule>(rule, weight)` | Replace a specific rule within a specific strategy |
+| `Suppress<TStrategy, TRule>(weight)` | Disable a specific rule within a specific strategy |
+| `InsertFirst<T>(rule, weight)` | Insert a rule at the beginning of a specific strategy |
+| `InsertLast<T>(rule, weight)` | Insert a rule at the end of a specific strategy |
+| `InsertBefore<TStrategy, TRule>(rule, weight)` | Insert before a specific rule in a specific strategy |
+| `InsertAfter<TStrategy, TRule>(rule, weight)` | Insert after a specific rule in a specific strategy |
+| `OverrideStrategyAll(strategy, weight)` | Temporarily replace all strategies entirely |
+| `OverrideAll<TRule>(rule, weight)` | Replace the matching rule across all strategies |
+| `SuppressAll<TRule>(weight)` | Disable the matching rule across all strategies |
+| `InsertFirstAll(rule, weight)` | Insert a rule at the beginning of all strategies |
+| `InsertLastAll(rule, weight)` | Insert a rule at the end of all strategies |
 
-All methods return `IDisposable`.
+> All return `IDisposable`. The default weight for Insert methods is 0.
 
-#### Override
+### Strategy Type Matching
 
-Temporarily replace an entire strategy. The target is identified by strategy type.
+Rule-level modifications require strategy type matching. They are applied only when the specified strategy type matches the currently active strategy's type.
+
+```
+Default: RuleStrategy<ArcherBaseRules>(ExcludeHiddenEnemies, BackRowFilter)
+
+InsertFirst<ArcherBaseRules>(Taunt)  → ArcherBaseRules active → Applied
+InsertFirst<ArcherCharmRules>(Taunt) → ArcherCharmRules inactive → Ignored
+
+OverrideStrategy activates ArcherCharmRules →
+
+InsertFirst<ArcherBaseRules>(Taunt)  → ArcherBaseRules inactive → Ignored
+InsertFirst<ArcherCharmRules>(Taunt) → ArcherCharmRules active → Applied
+```
+
+Once the strategy type is matched, rule-level modifications do not distinguish the strategy's origin. Whether it's the default strategy set at creation time or one replaced via `OverrideStrategy`, if the matching rule type exists inside, the modification is applied to all.
+
+### Strategy Override (OverrideStrategy)
+
+Temporarily replaces an entire strategy.
 
 ```csharp
-// Replace ArcherBaseRule with a charm rule
-var charm = arbiter.Override<ArcherBaseRule>(
-    new RuleStrategy<ArcherCharmRule>(new AllyFilter(), new BackRowFilter()),
+// Replace ArcherBaseRules with Charm rules
+var charm = arbiter.OverrideStrategy<ArcherBaseRules>(
+    new RuleStrategy<ArcherCharmRules>(new AllyFilter(), new BackRowFilter()),
     weight: 50
 );
 
-// Revert to original
-charm.Dispose();
+charm.Dispose(); // Release → next-priority override becomes active
 ```
 
-Works the same for scoring strategies:
+**Evaluation order during strategy replacement:** When a strategy is replaced, the arbiter processes in this order:
+
+1. Collect all rule handles (Override, Insert, Suppress) that match the new strategy's type
+2. Apply the collected rule handles to the new strategy
+3. Activate the fully-applied strategy
+
+`OverrideStrategy` only replaces the strategy's base configuration. Rule modification handles remain alive independently, and if the replaced strategy's type matches, they are applied as-is.
 
 ```csharp
-var frenzy = arbiter.Override<ArcherBaseScoring>(
-    new ScoringStrategy<ArcherFrenzyScoring>(
-        (new ThreatScorer(), 1.0f)
-    ),
-    weight: 30
-);
+// Default: RuleStrategy<ArcherBaseRules>(ExcludeHiddenEnemies, BackRowFilter)
 
-frenzy.Dispose();
+// 1. Insert Taunt
+var taunt = arbiter.InsertFirst<ArcherBaseRules>(new ForceTauntTarget());
+// Current: Taunt → ExcludeHiddenEnemies → BackRowFilter
+
+// 2. Replace ArcherBaseRules entirely (replacement also has ArcherBaseRules type)
+var enhanced = arbiter.OverrideStrategy<ArcherBaseRules>(
+    new RuleStrategy<ArcherBaseRules>(new ExcludeHiddenEnemies(), new FrontRowFilter()),
+    weight: 20);
+// Current: Taunt → ExcludeHiddenEnemies → FrontRowFilter
+// Taunt matches ArcherBaseRules, so it's still applied
+
+// 3. Release enhanced
+enhanced.Dispose();
+// Current: Taunt → ExcludeHiddenEnemies → BackRowFilter
 ```
 
-There is no separate API for rules vs. scoring — `Override<T>` handles both uniformly.
+### Rule Override (Override)
 
-#### Insert
-
-Temporarily inject steps into a specific strategy.
+Temporarily replaces a specific rule within a specific strategy with a different rule.
 
 ```csharp
-// Insert at the front of ArcherBaseRule
-var taunt = arbiter.InsertFirst<ArcherBaseRule>(new ForceTauntTarget());
+var improved = arbiter.Override<ArcherBaseRules, ExcludeHiddenEnemies>(
+    new ImprovedExcludeHiddenEnemies(), weight: 10);
 
-// Insert before BackRowFilter inside ArcherBaseRule
-var shield = arbiter.InsertBefore<ArcherBaseRule, BackRowFilter>(new ExcludeShielded());
+improved.Dispose(); // Release → next-priority override applied, or falls back to original
+```
 
-// Insert at the front of ALL strategies
-var tauntAll = arbiter.InsertFirstAll(new ForceTauntTarget());
+### Insert
 
-// Revert
+Temporarily inserts a rule into a specific strategy. Inserted rules also have weights. A higher weight means that Override/Suppress targeting that rule slot must use an even higher weight to take effect.
+
+```csharp
+// Default weight 0
+var taunt = arbiter.InsertFirst<ArcherBaseRules>(new ForceTauntTarget());
+
+// With explicit weight
+var taunt = arbiter.InsertFirst<ArcherBaseRules>(new ForceTauntTarget(), weight: 30);
+
+// Insert before a specific rule
+var buff = arbiter.InsertBefore<ArcherBaseRules, BackRowFilter>(new ExcludeShielded(), weight: 10);
+
+// Insert at the beginning of all strategies
+var tauntAll = arbiter.InsertFirstAll(new ForceTauntTarget(), weight: 20);
+```
+
+### Suppress
+
+Temporarily disables a specific rule within a specific strategy.
+
+```csharp
+var trueVision = arbiter.Suppress<ArcherBaseRules, ExcludeHiddenEnemies>(weight: 10);
+
+trueVision.Dispose(); // Release → if no suppression, rule executes
+```
+
+## Weight Competition
+
+When multiple modifications compete for the same target, weight determines the winner.
+
+**Core Principle: Overwriting ≠ Releasing.** All handles remain alive in a priority queue, and only the highest one is active. `Dispose` removes from the queue, and if the active handle is removed, the next in line is automatically promoted. When weights are equal, the later one takes priority.
+
+### Strategy-Level Competition (OverrideStrategy)
+
+```
+Queue state: [Charm w:20 active] [Confuse w:10 waiting] [WeakConfuse w:5 waiting] [Creation strategy w:0 waiting]
+
+Charm.Dispose()      → [Confuse w:10 active] [WeakConfuse w:5 waiting] [Creation strategy w:0 waiting]
+Confuse.Dispose()    → [WeakConfuse w:5 active] [Creation strategy w:0 waiting]
+WeakConfuse.Dispose() → [Creation strategy w:0 active]
+```
+
+```csharp
+var confuse = arbiter.OverrideStrategy<ArcherBaseRules>(
+    new RuleStrategy<ConfuseRules>(new RandomFilter()), weight: 10);
+var charm = arbiter.OverrideStrategy<ArcherBaseRules>(
+    new RuleStrategy<CharmRules>(new AllyTargetFilter()), weight: 20);
+
+charm.Dispose();   // Confuse promoted
+confuse.Dispose(); // Creation strategy (w:0) becomes active
+```
+
+### Rule-Level Competition (Separate Suppress + Override Queues)
+
+Each rule slot has **separate** Suppress and Override queues. Suppress/Override must have a weight higher than the rule slot's weight to be applied.
+
+> **When Suppress and the rule slot have equal weight, Suppress wins.**
+> When Override and the rule slot have equal weight, the later one takes priority (same as normal rules).
+
+```
+1. Suppress queue has an active entry (weight ≥ rule weight) → entire slot skipped (Override ignored)
+2. No Suppress + Override queue has an active entry (weight ≥ rule weight) → highest-weight Override executes
+3. Neither → original executes
+```
+
+Suppress means "turn this slot off," while Override means "change the contents of this slot." Suppress gets tie-breaking priority because "turning off" represents a stronger intent than "changing." To break through a Suppress, the rule weight must be higher than the Suppress weight.
+
+```
+ExcludeHiddenEnemies slot:
+  Suppress queue: [TrueVision w:30 active]
+  Override queue: [Improved w:20 active] [Weak w:10 waiting]
+
+→ Suppress active → slot skipped (Override ignored)
+→ TrueVision.Dispose() → Suppress queue empty → check Override queue → Improved executes
+→ Improved.Dispose() → Weak promoted
+→ Weak.Dispose() → original ExcludeHiddenEnemies (w:0) becomes active
+```
+
+```csharp
+var improved = arbiter.Override<ArcherBaseRules, ExcludeHiddenEnemies>(
+    new ImprovedExcludeHiddenEnemies(), weight: 20);
+var trueVision = arbiter.Suppress<ArcherBaseRules, ExcludeHiddenEnemies>(weight: 30);
+
+// Suppress active → slot skipped (Improved doesn't execute either)
+
+trueVision.Dispose();
+// No Suppress → check Override → Improved executes
+
+improved.Dispose();
+// Neither → original ExcludeHiddenEnemies executes
+```
+
+### Idempotency
+
+`Dispose` on an already-released handle is ignored. Whether active or waiting, `Dispose` safely removes the handle.
+
+### Strategy Lifecycle
+
+Strategies and rules defined at creation time are treated identically to inserted ones. The only difference is **whether they can be removed via a handle**.
+
+- **Creation-time strategies/rules** — Registered in the override queue with their weight. Cannot be removed since there is no handle.
+- **Runtime strategies/rules** — An `IDisposable` handle is returned. Can be removed from the queue via `Dispose`. If a weight is specified, it becomes the default weight for that rule slot.
+
+Even when an inserted rule is removed, Override/Suppress handles targeting that rule do not expire. Handles remain alive independently, and if the target reappears, they are type-matched and automatically reapplied.
+
+```csharp
+var taunt = arbiter.InsertFirst<ArcherBaseRules>(new ForceTauntTarget());
+var suppressTaunt = arbiter.Suppress<ArcherBaseRules, ForceTauntTarget>(weight: 10);
+// Current: (Taunt skipped) → ExcludeHiddenEnemies → BackRowFilter
+
 taunt.Dispose();
-shield.Dispose();
-tauntAll.Dispose();
-```
+// Current: ExcludeHiddenEnemies → BackRowFilter (suppressTaunt is alive but has no target)
 
-#### Suppress
+var taunt2 = arbiter.InsertFirst<ArcherBaseRules>(new ForceTauntTarget());
+// Current: (Taunt skipped) → ExcludeHiddenEnemies → BackRowFilter (suppressTaunt auto-reapplied)
 
-Temporarily disable a specific step within a strategy.
-
-```csharp
-// Disable ExcludeHidden inside ArcherBaseRule (e.g., "True Sight" buff)
-var trueSight = arbiter.Suppress<ArcherBaseRule, ExcludeHidden>(weight: 10);
-
-trueSight.Dispose(); // step re-enabled
-```
-
-#### Weight-Based Competition
-
-When multiple modifications target the same slot, the highest weight wins. All handles remain in a priority queue — `Dispose()` removes a handle from the queue, and the next-highest automatically promotes.
-
-If weights are equal, the most recently added handle takes priority.
-
-```
-Queue state: [Charm w:20 active] [Confuse w:10 waiting] [MildDaze w:5 waiting]
-
-Charm.Dispose()     → [Confuse w:10 active] [MildDaze w:5 waiting]
-Confuse.Dispose()   → [MildDaze w:5 active]
-MildDaze.Dispose()  → default strategy restored
-```
-
-```csharp
-var confuse = arbiter.Override<ArcherBaseRule>(
-    new RuleStrategy<ConfuseRule>(new RandomFilter()), weight: 10);
-var charm = arbiter.Override<ArcherBaseRule>(
-    new RuleStrategy<CharmRule>(new AllyTargetFilter()), weight: 20);
-
-// Dispose charm → confuse promotes
-charm.Dispose();
-
-// Dispose confuse → default strategy restored
-confuse.Dispose();
-```
-
-#### Idempotent Dispose
-
-Calling `Dispose()` on an already-disposed handle is a no-op. Handles can be disposed in any order regardless of their active/waiting state.
-
-```csharp
-var confuse = arbiter.Override<ArcherBaseRule>(
-    new RuleStrategy<ConfuseRule>(new RandomFilter()), weight: 10);
-var charm = arbiter.Override<ArcherBaseRule>(
-    new RuleStrategy<CharmRule>(new AllyTargetFilter()), weight: 20);
-
-// Dispose waiting handle first
-confuse.Dispose();
-
-// Dispose charm → confuse already gone, default restores
-charm.Dispose();
-
-// No-op
-confuse.Dispose();
-```
-
-#### Strategy Lifecycle
-
-Steps added at construction time and steps inserted at runtime are treated identically during execution. The only difference is whether you hold a handle to remove them.
-
-- **Construction-time steps:** Permanent. No handle, cannot be removed.
-- **Inserted steps:** `IDisposable` handle returned. Removable via `Dispose()`.
-
-When an inserted step is removed, any overrides or suppressions targeting it are also disposed automatically.
-
-```csharp
-var taunt = arbiter.InsertFirst<ArcherBaseRule>(new ForceTauntTarget());
-
-// Suppress the inserted taunt step
-var suppressTaunt = arbiter.Suppress<ArcherBaseRule, ForceTauntTarget>(weight: 10);
-
-// Removing the taunt step also cleans up its suppression
-taunt.Dispose();
-// suppressTaunt.Dispose() is now a no-op (idempotent)
+suppressTaunt.Dispose();
+// Current: Taunt → ExcludeHiddenEnemies → BackRowFilter
 ```
 
 ## Examples
 
-### Auto-Battle: Archer Target Selection
+### Auto-Battle Archer Character Target Selection
 
 ```csharp
 var archerArbiter = new Arbiter<IEnemy>(
-    new RuleStrategy<ArcherBaseRule>(
+    new RuleStrategy<ArcherBaseRules>(
         new ForceTauntTarget(),
-        new ExcludeHidden(),
-        new ExcludeInvincible(),
+        new ExcludeHiddenEnemies(),
+        new ExcludeInvincibleEnemies(),
         new BackRowFilter()
     ),
     new ScoringStrategy<ArcherBaseScoring>(
@@ -372,29 +471,12 @@ var archerArbiter = new Arbiter<IEnemy>(
 );
 ```
 
-### Auto-Battle: Tank Target Selection
-
-```csharp
-var tankArbiter = new Arbiter<IEnemy>(
-    new RuleStrategy<TankBaseRule>(
-        new ForceTauntTarget(),
-        new ExcludeHidden(),
-        new ExcludeInvincible(),
-        new FrontRowFilter()
-    ),
-    new ScoringStrategy<TankBaseScoring>(
-        (new HpRatioScorer(), 0.3f),
-        (new ThreatScorer(), 0.7f)
-    )
-);
-```
-
-### Souls-Like: Lock-On Target
+### Souls-like Lock-On Target Selection
 
 ```csharp
 var lockOnArbiter = new Arbiter<IEnemy>(
-    new RuleStrategy<LockOnRule>(
-        new ExcludeOffScreen(),
+    new RuleStrategy<LockOnRules>(
+        new ExcludeOutOfSight(),
         new ExcludeOutOfRange()
     ),
     new ScoringStrategy<LockOnScoring>(
@@ -405,15 +487,15 @@ var lockOnArbiter = new Arbiter<IEnemy>(
 );
 ```
 
-### 3D Action: Context Action Selection
+### 3D Action Context Action Selection
 
 ```csharp
 var contextArbiter = new Arbiter<IContextAction>(
-    new RuleStrategy<ContextActionRule>(
-        new ExcludeUnavailableActions(),
+    new RuleStrategy<ContextRules>(
+        new ExcludeUnavailableInCurrentState(),
         new ExcludeOnCooldown()
     ),
-    new ScoringStrategy<ContextActionScoring>(
+    new ScoringStrategy<ContextScoring>(
         (new DistanceScorer(), 0.4f),
         (new AngleScorer(), 0.3f),
         (new PriorityScorer(), 0.3f)
@@ -421,28 +503,12 @@ var contextArbiter = new Arbiter<IContextAction>(
 );
 ```
 
-### Turn-Based: Camera Focus Selection
-
-```csharp
-var cameraArbiter = new Arbiter<IUnit>(
-    new RuleStrategy<CameraFocusRule>(
-        new ActionableUnitsOnly(),
-        new PrioritizeEventUnits()
-    ),
-    new ScoringStrategy<CameraFocusScoring>(
-        (new DangerScorer(), 0.5f),
-        (new HpRatioScorer(), 0.3f),
-        (new FrontLineDistanceScorer(), 0.2f)
-    )
-);
-```
-
-### Asset Unload Priority
+### Asset Unload Target Selection
 
 ```csharp
 var assetArbiter = new Arbiter<LoadedAsset>(
-    new RuleStrategy<AssetUnloadRule>(
-        new ExcludeActiveSceneAssets(),
+    new RuleStrategy<AssetUnloadRules>(
+        new ExcludeInUseByCurrentScene(),
         new ExcludePreloadedAssets()
     ),
     new ScoringStrategy<AssetUnloadScoring>(
@@ -453,82 +519,150 @@ var assetArbiter = new Arbiter<LoadedAsset>(
 );
 ```
 
+### Overlap Example — Multiple Status Effects Applied Simultaneously
+
+```csharp
+// Default: RuleStrategy<ArcherBaseRules>(ExcludeHiddenEnemies, BackRowFilter)
+
+// 1. True Vision buff
+var trueVision = arbiter.Suppress<ArcherBaseRules, ExcludeHiddenEnemies>(weight: 10);
+// → (ExcludeHiddenEnemies skipped) → BackRowFilter
+
+// 2. Replace ExcludeHiddenEnemies with AreaDetection
+var areaDetection = arbiter.Override<ArcherBaseRules, ExcludeHiddenEnemies>(
+    new AreaDetectionFilter(), weight: 10);
+// → Suppress is active so slot is skipped
+
+// 3. Insert Taunt
+var taunt = arbiter.InsertFirstAll(new ForceTauntTarget());
+// → Taunt → (ExcludeHiddenEnemies skipped) → BackRowFilter
+
+// 4. Confuse → replace strategy entirely
+var confuse = arbiter.OverrideStrategy<ArcherBaseRules>(
+    new RuleStrategy<ConfuseRules>(new RandomFilter()), weight: 10);
+// → RandomFilter
+
+// 5-8. Dispose in order — effects unwind in reverse
+confuse.Dispose();       // → Taunt → (ExcludeHiddenEnemies skipped) → BackRowFilter
+taunt.Dispose();         // → (ExcludeHiddenEnemies skipped) → BackRowFilter
+trueVision.Dispose();    // → No Suppress → AreaDetectionFilter → BackRowFilter
+areaDetection.Dispose(); // → original ExcludeHiddenEnemies → BackRowFilter
+```
+
 ## Advanced Usage
 
 ### Grouping Strategies with Interfaces
 
-Since strategies are identified by type, you can leverage C# interface hierarchies to group and target them.
+You can group strategies using C# interface hierarchies.
 
 ```csharp
-public interface IBaseRule { }
+public interface IBaseRules { }
 
-public struct ArcherBaseRule : IBaseRule { }
-public struct TankBaseRule : IBaseRule { }
-public struct MageBaseRule : IBaseRule { }
+public struct ArcherBaseRules : IBaseRules { }
+public struct TankBaseRules : IBaseRules { }
+public struct MageBaseRules : IBaseRules { }
 ```
 
 ```csharp
-// Insert taunt into ALL base-rule strategies
-var taunt = arbiter.InsertFirst<IBaseRule>(new ForceTauntTarget());
+// Insert Taunt into all base rule strategies
+var taunt = arbiter.InsertFirst<IBaseRules>(new ForceTauntTarget());
 
-// Insert into archer only
-var buff = arbiter.InsertFirst<ArcherBaseRule>(new ExcludeHidden());
+// Insert only into archer base rules
+var buff = arbiter.InsertFirst<ArcherBaseRules>(new ExcludeHiddenEnemies());
 ```
 
-Interfaces act as strategy groups — no need for separate `All` APIs when a single type parameter controls scope.
+Since the interface acts as a strategy group, you can control scope with a single type without needing separate `All` APIs.
 
-### Multi-Interface Tagging
-
-A single strategy type can implement multiple interfaces, belonging to several categories at once.
+### Tag Management via Multiple Inheritance
 
 ```csharp
-public interface IBaseRule { }
-public interface IBackRowRule { }
-public interface IPhysicalRule { }
+public interface IBaseRules { }
+public interface IBackRowRules { }
+public interface IPhysicalRules { }
 
-public struct ArcherBaseRule : IBaseRule, IBackRowRule, IPhysicalRule { }
-public struct MageBaseRule : IBaseRule, IBackRowRule { }
-public struct TankBaseRule : IBaseRule, IPhysicalRule { }
+public struct ArcherBaseRules : IBaseRules, IBackRowRules, IPhysicalRules { }
+public struct MageBaseRules : IBaseRules, IBackRowRules { }
+public struct TankBaseRules : IBaseRules, IPhysicalRules { }
 ```
 
 ```csharp
-// Taunt for all base rules
-arbiter.InsertFirst<IBaseRule>(new ForceTauntTarget());
-
-// Suppress stealth detection for back-row characters only
-arbiter.Suppress<IBackRowRule, ExcludeHidden>(weight: 10);
-
-// Add armor scorer for physical characters only
-arbiter.InsertLast<IPhysicalScoring>(new ArmorScorer(0.3f));
+arbiter.InsertFirst<IBaseRules>(new ForceTauntTarget());           // All base rules
+arbiter.Suppress<IBackRowRules, ExcludeHiddenEnemies>(weight: 10); // Back row only
+arbiter.InsertLast<IPhysicalScoring>(new DefenseScorer(0.3f));     // Physical only
 ```
 
-No custom tag system needed — the C# type system handles it, with full IDE autocomplete, compile-time verification, and refactoring safety.
+No separate tagging system needed — the C# type system fills that role. IDE auto-completion, compile-time verification, and refactoring safety come for free.
 
 ### Same Buff, Different Effects Per Class
 
-Interface tags let the same buff automatically branch without any `if` statements.
+Interfaces as tags allow the same buff to branch automatically by class. No if-statements needed.
 
 ```csharp
-// "Frenzy" buff activates:
-// Physical characters → switch to front-row targeting
-arbiter.InsertFirst<IPhysicalRule>(new FrontRowFilter());
-// Back-row characters → ignore stealth
-arbiter.Suppress<IBackRowRule, ExcludeHidden>(weight: 10);
+// "Frenzy" buff activates
+arbiter.InsertFirst<IPhysicalRules>(new FrontRowFilter());           // Physical: attack front row
+arbiter.Suppress<IBackRowRules, ExcludeHiddenEnemies>(weight: 10);   // Back row: ignore stealth
 
-// Archer (IPhysicalRule + IBackRowRule) → both effects apply
-// Tank (IPhysicalRule only) → only front-row targeting
-// Mage (IBackRowRule only) → only stealth ignore
+// Archer has IPhysicalRules and IBackRowRules → both applied
+// Tank has only IPhysicalRules → only one applied
+// Mage has only IBackRowRules → only one applied
 ```
 
-### DI Integration (VContainer)
+### Immunity via Creation Weight
 
-The first type parameter of an arbiter serves as its identity, enabling generic-based DI registration without string keys.
+Setting a high weight on a creation-time strategy lets you express units immune to certain overrides without any separate system.
 
 ```csharp
-builder.Register<Arbiter<ArcherBaseRule, IEnemy>>(Lifetime.Singleton)
+// Regular monster: default creation weight (0)
+var minionArbiter = new Arbiter<IEnemy>(
+    new RuleStrategy<MinionRules>(new FrontRowFilter())
+);
+
+// Boss: creation weight 100
+var bossArbiter = new Arbiter<IEnemy>(
+    new RuleStrategy<BossRules>(new FrontRowFilter(), weight: 100)
+);
+
+// Charm (w:50) activates
+var charm = arbiter.OverrideStrategy<IBaseRules>(
+    new RuleStrategy<CharmRules>(new AllyFilter()), weight: 50);
+
+// Minion: creation strategy (w:0) < Charm (w:50) → Charm applied
+// Boss: creation strategy (w:100) > Charm (w:50) → Charm ignored (immune)
+```
+
+### Partial Immunity via Rule Weight
+
+Immunity can also be expressed at the rule level rather than the strategy level. This is useful when you want to protect only specific rules.
+
+```csharp
+var bossArbiter = new Arbiter<IEnemy>(
+    new RuleStrategy<BossRules>(
+        new FrontRowFilter(),                        // Weight 0 → Override/Suppress freely
+        (new ForceAvoidInvincible(), weight: 100)     // Weight 100 → this rule is protected
+    )
+);
+
+// Suppress (w:50) → creation rule (w:100) > Suppress (w:50) → ignored
+var suppress = arbiter.Suppress<BossRules, ForceAvoidInvincible>(weight: 50);
+
+// Suppress (w:100) → equal weight, Suppress wins ties → applied
+var tieSuppress = arbiter.Suppress<BossRules, ForceAvoidInvincible>(weight: 100);
+
+// Suppress (w:200) → Suppress (w:200) > creation rule (w:100) → applied
+var strongSuppress = arbiter.Suppress<BossRules, ForceAvoidInvincible>(weight: 200);
+```
+
+Strategy weight protects the entire strategy from replacement, while rule weight protects individual rules from Override/Suppress. Since these two layers are independent, you can naturally express requirements like "the strategy can be replaced, but this specific rule must never be turned off."
+
+## DI Integration (VContainer)
+
+Since the arbiter's first type parameter is the strategy type, it can be distinguished via generics without string keys.
+
+```csharp
+builder.Register<Arbiter<ArcherBaseRules, IEnemy>>(Lifetime.Singleton)
     .WithParameter(new IStrategy<IEnemy>[]
     {
-        new RuleStrategy<ArcherBaseRule>(new ExcludeHidden(), new BackRowFilter()),
+        new RuleStrategy<ArcherBaseRules>(new ExcludeHiddenEnemies(), new BackRowFilter()),
         new ScoringStrategy<ArcherBaseScoring>(
             (new HpRatioScorer(), 0.5f),
             (new ThreatScorer(), 0.5f))
@@ -538,25 +672,15 @@ builder.Register<Arbiter<ArcherBaseRule, IEnemy>>(Lifetime.Singleton)
 ```csharp
 public class ArcherAI
 {
-    readonly Arbiter<ArcherBaseRule, IEnemy> _arbiter;
+    readonly Arbiter<ArcherBaseRules, IEnemy> _arbiter;
 
-    public ArcherAI(Arbiter<ArcherBaseRule, IEnemy> arbiter)
+    public ArcherAI(Arbiter<ArcherBaseRules, IEnemy> arbiter)
     {
         _arbiter = arbiter;
     }
 }
 ```
 
-## Design Principles
-
-- **Single concept** — an arbiter runs an array of strategies in order. That's it.
-- **Single interface** — every strategy is `IStrategy<T>`.
-- **Types as identifiers** — strategy types replace string keys. Compile-time safe.
-- **Composition over inheritance** — build strategies from small, reusable steps.
-- **IDisposable + weight** — the only mechanism for all runtime modifications.
-- **Zero dependencies** — no external packages required.
-- **IL2CPP safe** — fully compatible with AOT compilation.
-
 ## License
 
-[MIT](LICENSE)
+MIT
