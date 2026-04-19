@@ -142,7 +142,7 @@ public class ExcludeHiddenEnemies : IRule<IEnemy>
     public IReadOnlyList<IEnemy> Apply(IReadOnlyList<IEnemy> candidates, ArbiterContext ctx)
     {
         var result = candidates.Where(e => !e.IsHidden).ToList();
-        return result.Count > 0 ? result : candidates;
+        return result;
     }
 }
 
